@@ -52,7 +52,7 @@ GUI 反推紫色候选：
 
 ### 懒人包：直接下载 exe 双击打开
 
-如果连上面几步都嫌麻烦，去 [Releases](../../releases) 下载 `BidKing.exe`，双击直接运行。不需要装 Python 或 uv。
+如果不需要从源码编译，在 [Releases](../../releases) 下载 `BidKing.exe`，双击直接运行。不需要装 Python 或 uv。
 
 > 想自己打包：`uv run pyinstaller bidking.spec`，输出 `BidKing.exe`（约 45 MB，自包含，复制到任意电脑都能跑）。
 
