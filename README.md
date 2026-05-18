@@ -50,6 +50,12 @@ GUI 反推紫色候选：
 
 ---
 
+### 懒人包：直接下载 exe 双击打开
+
+如果连上面几步都嫌麻烦，去 [Releases](../../releases) 下载 `BidKing.exe`，双击直接运行。不需要装 Python 或 uv。
+
+> 想自己打包：`uv run pyinstaller bidking.spec`，输出 `BidKing.exe`（约 45 MB，自包含，复制到任意电脑都能跑）。
+
 ## 小白入门 (从零开始)
 
 不会编程也能跑。跟着做，10 分钟搞定。
@@ -112,12 +118,6 @@ GUI 窗口就出来了。以后每次启动只跑 `uv run bidking-gui` 这一句
 6. 拍卖结束后把结算截图拖进 GUI → 填仓库总价 → 点 **标记完成**
 
 一条记录就攒下来了。
-
-### 懒人包：直接下载 exe 双击打开
-
-如果连上面几步都嫌麻烦，去 [Releases](../../releases) 下载 `BidKing.exe`，双击直接运行。不需要装 Python 或 uv。
-
-> 想自己打包：`uv run pyinstaller bidking.spec`，输出 `BidKing.exe`（约 45 MB，自包含，复制到任意电脑都能跑）。
 
 ## 工作流
 
