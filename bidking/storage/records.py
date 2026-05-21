@@ -6,6 +6,15 @@
 
 status 流转:
   draft -> bid_placed -> completed
+
+inputs 字典内常见 key（不强制，按需写入）:
+  T, B, WG, purple_avg, purple_count_est, purple_total_grids, purple_count,
+  purple_total_value, gold_*（同上）, v_wg, v_b, v_p, v_jr, v_g, v_r,
+  screenshot_path  ← OCR 自动填充时保存的游戏原始截图（相对路径，可为 None）
+
+actual 字典:
+  total_value           仓库实际总价
+  screenshot_path       结算截图（事后填，与 inputs.screenshot_path 区分）
 """
 from __future__ import annotations
 

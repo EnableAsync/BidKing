@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 
+# 已知的 config.json 顶层 key 常量（文档作用，便于查找）
+KEY_OCR_SAVE_SCREENSHOT = "ocr_save_screenshot"  # bool, 是否保存 OCR 用的游戏原始截图
+
+
 class Config:
     def __init__(self, path: str | os.PathLike[str]):
         self.path = Path(path)

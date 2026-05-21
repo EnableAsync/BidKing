@@ -11,6 +11,7 @@ PySide6 GUI，在《竞拍之王》游戏里精算仓库价值范围、记录每
 1. 点 **开始新游戏** → 选伊森
 2. 在游戏里买道具，至少买 **良品扫描、普品扫描、优品均格** 这三个
 3. 把道具读数填进 GUI：先填总格数 → 蓝色格数 → 白绿格数 → 紫色填平均格数
+   - 或者直接点输入区顶部的 **📷 从游戏截图自动填充**，程序自动截游戏画面、OCR 识别、回填到对应输入框
 4. GUI 自动反推所有可能的 (总格数, 物品数) 组合 → 给出仓库价值范围
 5. 根据范围决定出价 → 出价填进「我的出价」
 6. （可选步骤）拍卖结束后把结算截图拖进 GUI
@@ -217,7 +218,8 @@ GUI 窗口就出来了。以后每次启动只跑 `uv run bidking-gui` 这一句
     "gold_avg": 2.66, "gold_count_est": 5,
     "gold_total_grids": null, "gold_count": null,
     "v_wg": 100, "v_b": 800, "v_p": 2000,
-    "v_jr": 20000, "v_g": 10000, "v_r": 30000
+    "v_jr": 20000, "v_g": 10000, "v_r": 30000,
+    "screenshot_path": "screenshots/abc123-input.png"
   },
   "predicted": {
     "purple_candidates": [{"purple_total_grids": 16, "purple_count": 10}, ...],
@@ -289,9 +291,14 @@ bidking/
 ├── gui/
 │   ├── main_window.py       # 主窗口
 │   ├── history_window.py    # 历史记录
+│   ├── ocr_worker.py        # QThread: 后台跑截图+OCR, 避免冻 UI
 │   └── widgets/
 │       ├── red_items_table.py    # (保留, 当前未使用)
 │       └── screenshot.py    # 结算截图 widget
+├── capture/
+│   └── window_capture.py    # Win32 定位游戏窗口 + 桌面 DC 截图（不触发反作弊）
+├── ocr/
+│   └── auction_ocr.py       # RapidOCR + 正则提取 4 个字段
 ├── strategies/
 │   ├── base.py              # 策略抽象基类
 │   └── grid_actuarial.py    # 数格子精算法
@@ -303,10 +310,32 @@ bidking/
     └── heroes.json          # 20 个英雄
 ```
 
+## 截图识别功能
+
+输入区顶部的 **📷 从游戏截图自动填充** 按钮把"找游戏窗口 → 截图 → OCR → 回填"一键完成。
+
+**怎么工作：**
+1. 程序枚举所有顶层窗口，按"标题含『竞拍之王』+ 进程在 Steam 游戏目录下"找到游戏窗口
+2. 把游戏窗口拉到前台 → 等 180ms 让 DWM 合成 → `PIL.ImageGrab.grab(bbox)` 从桌面 DC 截取那一块 → 把 BidKing 切回前台
+3. RapidOCR（ONNX 运行时 + 中文轻量模型，纯离线，~50MB）对截图做 OCR
+4. 正则匹配游戏面板里的固定文案：
+   - `所有藏品[...]X格` → 总格数
+   - `所有蓝色品质藏品[...]X格` → 蓝色格数
+   - `所有白色和绿色品质藏品[...]X格` → 白绿格数
+   - `所有紫色品质藏品平均[...]X.XX格` → 紫色平均占用格数
+5. 匹中的字段覆盖输入框；未匹中的保持原值（"增量填充"，不会清掉你已经手填的）
+6. 状态栏 Toast 用完整中文回显：「已识别: 总格数=..., 蓝色格数=..., ...」
+
+**为什么这种截图方式不触发反作弊：** 没有用 `PrintWindow`（那个会向游戏窗口发 `WM_PRINT` 消息，游戏的 WndProc 可以 hook 到）。改用 `ImageGrab.grab` 从桌面 DWM 合成层读图，跟你按 Win+Shift+S 是同源的，游戏完全感知不到。
+
+**保存原图开关：** 按钮旁的勾选框（默认开），勾上后每次识别都把游戏原始截图存到 `screenshots/<record_id>-input.png`，方便事后核对识别结果或攒数据集训练 ML 模型。开关状态持久化到 `config.json` 的 `ocr_save_screenshot` 字段。
+
+**首次启动慢：** RapidOCR 第一次跑会加载 ~16MB 的 ONNX 模型，耗时 ~1s。之后单张截图识别 1-3s 完成。
+
 ## 路线图
 
+- [x] OCR 自动截屏识别 → 自动填充总格数 / 蓝色 / 白绿 / 紫色平均（RapidOCR 离线，安全方式不触发反作弊）
 - [ ] 累计盈亏曲线、出价偏差分布图
-- [ ] OpenCV 自动截屏识别 → 自动填充输入
 - [ ] 截图 OCR 提取真实总价 / 物品列表
 - [ ] 更多估价策略 (道具组合、ML 回归)
 - [ ] 对手英雄、已购买道具等额外特征

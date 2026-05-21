@@ -24,6 +24,7 @@ from PySide6.QtCore import Qt, QSignalBlocker, QTimer
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -44,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..storage.config import Config
+from ..storage.config import Config, KEY_OCR_SAVE_SCREENSHOT
 from ..storage.records import (
     RecordStore,
     empty_record,
@@ -52,6 +53,7 @@ from ..storage.records import (
 )
 from ..strategies.grid_actuarial import GridActuarial
 from ..strategies.base import StrategyBase
+from .ocr_worker import OCRWorker
 from .widgets.red_items_table import RedItemsTable
 from .widgets.screenshot import ScreenshotWidget
 
@@ -169,6 +171,11 @@ class MainWindow(QMainWindow):
         self._save_timer.timeout.connect(self._do_save)
 
         self._loading = False  # 加载记录时屏蔽 autosave
+
+        # OCR worker 状态
+        self._ocr_worker: OCRWorker | None = None
+        self._ocr_pending: bool = False  # 当前 worker 还在跑时被点了一次, 需要 worker 结束后重启
+        self._ocr_discard_current: bool = False  # 当前 worker 的结果是否要丢弃
 
         self._build_ui()
         self._load_initial_record()
@@ -359,6 +366,9 @@ class MainWindow(QMainWindow):
         ):
             w.valueChanged.connect(self._on_field_changed)
 
+        # 从游戏截图 OCR 自动填充 (插在最上面，紧贴它要填的字段)
+        form.addRow(self._build_ocr_row())
+
         # 基础格数
         basic_box = QGroupBox("总格数 / 蓝色 / 白绿")
         basic_h = QHBoxLayout(basic_box)
@@ -441,6 +451,42 @@ class MainWindow(QMainWindow):
         form.addRow(price_box)
 
         return box
+
+    def _build_ocr_row(self) -> QWidget:
+        """输入区顶部的「从游戏截图自动填充」按钮 + 「保存原图」开关。"""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
+
+        self.btn_ocr = QPushButton("📷 从游戏截图自动填充")
+        self.btn_ocr.setStyleSheet(
+            "font-weight: bold; padding: 6px 14px; background: #e3f2fd;"
+            " border: 1px solid #1565c0; border-radius: 4px;"
+        )
+        self.btn_ocr.setToolTip(
+            "自动截取《竞拍之王》游戏窗口，识别并填入总格数、蓝色格数、"
+            "白绿格数、紫色平均占用格数 4 项。\n"
+            "已识别到的字段会覆盖输入框；未识别到的字段保持不变。\n"
+            "识别过程中再次点击会取消上一次并重新识别。"
+        )
+        self.btn_ocr.clicked.connect(self._on_ocr_button_clicked)
+        h.addWidget(self.btn_ocr)
+
+        self.cb_save_screenshot = QCheckBox("保存原图")
+        self.cb_save_screenshot.setToolTip(
+            "勾选后，每次自动填充会把游戏原始截图保存到"
+            " screenshots/<record_id>-input.png，便于事后核对识别结果"
+            "或攒数据集训练模型。"
+        )
+        self.cb_save_screenshot.setChecked(
+            bool(self.config.get(KEY_OCR_SAVE_SCREENSHOT, True))
+        )
+        self.cb_save_screenshot.toggled.connect(self._on_save_screenshot_toggled)
+        h.addWidget(self.cb_save_screenshot)
+        h.addStretch()
+
+        return w
 
     def _build_outputs_box(self) -> QWidget:
         box = QGroupBox("输出 (动态联动)")
@@ -882,6 +928,8 @@ class MainWindow(QMainWindow):
             "v_jr": self.in_v_jr.value() or None,
             "v_g": self.in_v_g.value() or None,
             "v_r": self.in_v_r.value() or None,
+            # OCR 自动截图填充时保存的游戏原图路径 (GUI 无对应控件, 从 record 透传)
+            "screenshot_path": self.current_record.get("inputs", {}).get("screenshot_path"),
         }
 
     def _collect_predicted(self, result: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -994,6 +1042,106 @@ class MainWindow(QMainWindow):
         self.current_record = rec
         self.current_session_id = rec.get("session_id") or new_session_id()
         self._load_record_into_ui(rec)
+
+    # ---------- 从游戏截图自动填充 (OCR) ----------
+
+    def _on_save_screenshot_toggled(self, checked: bool) -> None:
+        """保存原图开关 toggled，持久化到 config.json。"""
+        self.config.set(KEY_OCR_SAVE_SCREENSHOT, bool(checked))
+
+    def _on_ocr_button_clicked(self) -> None:
+        """从游戏截图按钮被点击。
+
+        若已有 worker 在跑：标记"取消旧 worker 的结果 + 排队新一次"，
+        等旧 worker 结束后自动启动新 worker。
+        """
+        if self._ocr_worker is not None and self._ocr_worker.isRunning():
+            # 取消旧 worker 的结果回填，并排队一次新识别
+            self._ocr_worker.cancel()
+            self._ocr_discard_current = True
+            self._ocr_pending = True
+            self.status_bar.showMessage("已取消上一次识别，正在重新识别...", 3000)
+            return
+        self._start_ocr_worker()
+
+    def _start_ocr_worker(self) -> None:
+        self.btn_ocr.setText("识别中... (再点取消重试)")
+        self._ocr_discard_current = False
+        self._ocr_worker = OCRWorker(parent=self)
+        self._ocr_worker.finished_ok.connect(self._on_ocr_finished_ok)
+        self._ocr_worker.finished_err.connect(self._on_ocr_finished_err)
+        self._ocr_worker.finished.connect(self._on_ocr_thread_finished)
+        self._ocr_worker.start()
+
+    def _on_ocr_thread_finished(self) -> None:
+        """QThread.finished 信号：worker run() 已退出。"""
+        # 恢复按钮文案（finished_ok / finished_err 也会改文案，这里兜底）
+        self.btn_ocr.setText("📷 从游戏截图自动填充")
+        # 若期间被点过一次，启动新一次
+        if self._ocr_pending:
+            self._ocr_pending = False
+            self._start_ocr_worker()
+
+    def _on_ocr_finished_ok(self, result: Any, img: Any) -> None:
+        """OCR 成功回调。result: OCRResult, img: PIL.Image"""
+        if self._ocr_discard_current:
+            return
+        self.btn_ocr.setText("📷 从游戏截图自动填充")
+
+        # 收集已识别到的字段，按"增量填充"策略：识别到的覆盖输入框，未识别到的保留原值
+        parts: list[str] = []
+        if result.total_grids is not None:
+            self.in_T.setValue(int(result.total_grids))
+            parts.append(f"总格数={result.total_grids}")
+        if result.blue_grids is not None:
+            self.in_B.setValue(int(result.blue_grids))
+            parts.append(f"蓝色格数={result.blue_grids}")
+        if result.white_green_grids is not None:
+            self.in_WG.setValue(int(result.white_green_grids))
+            parts.append(f"白绿格数={result.white_green_grids}")
+        if result.purple_avg is not None:
+            self.in_purple_avg.setValue(float(result.purple_avg))
+            parts.append(f"紫色平均占用格数={result.purple_avg}")
+
+        if not parts:
+            self.status_bar.showMessage(
+                "未识别到拍卖面板数据，请确认游戏画面停留在拍卖详情页（中间面板可见）",
+                6000,
+            )
+            return
+
+        # 保存原图（如果开关打开）
+        screenshot_msg = ""
+        if self.cb_save_screenshot.isChecked():
+            try:
+                rel = self._save_input_screenshot(img)
+                if rel:
+                    self.current_record.setdefault("inputs", {})["screenshot_path"] = rel
+                    screenshot_msg = "，原图已保存"
+            except OSError as e:
+                screenshot_msg = f"，原图保存失败: {e}"
+
+        self.status_bar.showMessage(
+            "已识别: " + ", ".join(parts) + screenshot_msg, 6000
+        )
+        # autosave (按钮 setValue 已经触发 _on_field_changed，再 schedule 一次保险)
+        self._schedule_save()
+
+    def _on_ocr_finished_err(self, msg: str) -> None:
+        if self._ocr_discard_current:
+            return
+        self.btn_ocr.setText("📷 从游戏截图自动填充")
+        self.status_bar.showMessage(msg, 6000)
+
+    def _save_input_screenshot(self, img: Any) -> str | None:
+        """把 PIL.Image 存到 screenshots/<record_id>-input.png，返回相对路径。"""
+        rec_id = self.current_record.get("record_id")
+        if not rec_id:
+            return None
+        target = PROJECT_DIR / "screenshots" / f"{rec_id}-input.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        img.save(str(target), "PNG")
+        return target.relative_to(PROJECT_DIR).as_posix()
 
     def _on_mark_complete(self) -> None:
         self.current_record["status"] = "completed"

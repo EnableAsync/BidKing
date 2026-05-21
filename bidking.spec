@@ -1,14 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
+# 项目自身的静态数据（地图、英雄 JSON）
 datas = collect_data_files('bidking', includes=['data/**/*.json'])
+# RapidOCR 的 ONNX 模型 + config.yaml 必须随包打入，否则首次运行时找不到
+datas += collect_data_files('rapidocr_onnxruntime')
+
+# 显式声明 hidden imports，避免 PyInstaller 静态分析漏掉
+hiddenimports = collect_submodules('rapidocr_onnxruntime') + [
+    'onnxruntime',
+    'onnxruntime.capi._pybind_state',
+]
 
 a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
