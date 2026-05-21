@@ -194,6 +194,10 @@ class GridActuarial(StrategyBase):
             if c_p is not None or a_p is not None or b_p is not None:
                 errors.append("紫色输入不足以反推 (a, b)")
 
+        # 候选按物品数量升序排序 (展示顺序与索引保持一致)
+        purple_candidates.sort(key=lambda d: d["purple_count"])
+        gold_candidates.sort(key=lambda d: d["gold_count"])
+
         # 计算所有候选组合的估值, 取 min/max/median
         values: list[float] = []
         if purple_candidates:
