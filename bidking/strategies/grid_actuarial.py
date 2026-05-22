@@ -108,6 +108,7 @@ def _determine_candidates(
     count_key: str,
     k: int = 6,
     ensure_b: list[int] | None = None,
+    max_items: int = 80,
 ) -> list[dict[str, int]]:
     """根据某品质的多个可选输入, 返回该品质的 (总格数, 物品数) 候选 list。
 
@@ -122,7 +123,7 @@ def _determine_candidates(
         return [{grid_key: a, count_key: b_est or 1}]
 
     if c is not None and c > 0:
-        all_c = find_candidates(c)
+        all_c = find_candidates(c, max_items=max_items)
         if b is not None:
             matching = [(aa, bb) for (aa, bb) in all_c if bb == b]
             if matching:
@@ -177,7 +178,7 @@ class GridActuarial(StrategyBase):
         purple_candidates = _determine_candidates(
             a_p, b_p, c_p, b_p_est,
             grid_key="purple_total_grids", count_key="purple_count",
-            k=12, ensure_b=list(range(8, 21)),
+            k=51, ensure_b=list(range(0, 51)), max_items=50,
         )
         gold_enabled = (
             a_g is not None or (c_g is not None and c_g > 0) or b_g is not None
