@@ -159,6 +159,16 @@ class GridActuarial(StrategyBase):
         b_p = _to_int(inputs.get("purple_count"))
         c_p = _to_float(inputs.get("purple_avg"))
         b_p_est = _to_int(inputs.get("purple_count_est"))
+        p_total_value = _to_float(inputs.get("purple_total_value"))
+        v_p = _to_float(inputs.get("v_p"))
+
+        # 若仅给了紫色总价值 (优品估价) 而未给总格数, 用 v_p 反推 a_p
+        if a_p is None and p_total_value is not None and p_total_value > 0 \
+                and v_p is not None and v_p > 0:
+            a_p = max(1, round(p_total_value / v_p))
+            warnings.append(
+                f"紫色总格数由总价值 {p_total_value:g} / 单格估价 {v_p:g} 反推 = {a_p}"
+            )
         a_g = _to_int(inputs.get("gold_total_grids"))
         b_g = _to_int(inputs.get("gold_count"))
         c_g = _to_float(inputs.get("gold_avg"))
