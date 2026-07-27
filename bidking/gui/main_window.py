@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -55,6 +56,7 @@ from ..strategies.grid_actuarial import GridActuarial
 from ..strategies.base import StrategyBase
 from .ocr_worker import OCRWorker
 from .widgets.red_items_table import RedItemsTable
+from .widgets.revealed_items_table import RevealedItemsTable
 from .widgets.screenshot import ScreenshotWidget
 
 
@@ -319,6 +321,9 @@ class MainWindow(QMainWindow):
         self.in_gold_total_grids = _make_int_spin(maximum=999, group_sep=False, width=80)
         self.in_gold_count = _make_int_spin(maximum=999, group_sep=False, width=80)
         self.in_gold_total_value = _make_money_spin(width=130)
+        # 已有格数 (金/红): 仅在金红混合模式下单独计价, 剩余走 v_jr
+        self.in_owned_gold_grids = _make_int_spin(maximum=999, group_sep=False, width=80)
+        self.in_owned_red_grids = _make_int_spin(maximum=999, group_sep=False, width=80)
 
         _tint_spin(self.in_B, "blue")
         _tint_spin(self.in_WG, "wg")
@@ -330,6 +335,8 @@ class MainWindow(QMainWindow):
                   self.in_gold_total_grids, self.in_gold_count,
                   self.in_gold_total_value):
             _tint_spin(w, "gold")
+        _tint_spin(self.in_owned_gold_grids, "gold")
+        _tint_spin(self.in_owned_red_grids, "red")
 
         defaults = self.config.get_strategy_defaults(
             self.current_strategy.name, self.current_strategy.defaults
@@ -436,9 +443,65 @@ class MainWindow(QMainWindow):
         g_h.addStretch()
         form.addRow(g_box)
 
+        # 已显示物品 (逐件录入颜色/占格/价值, 自动派生 owned_gold/red 格数)
+        revealed_box = QGroupBox("已显示物品 (拍卖中已看到的物品: 颜色/占格/价值)")
+        revealed_v = QVBoxLayout(revealed_box)
+
+        toggle_h = QHBoxLayout()
+        self.btn_toggle_revealed = QPushButton("▶ 展开")
+        self.btn_toggle_revealed.setCheckable(True)
+        self.btn_toggle_revealed.setChecked(False)
+        self.btn_toggle_revealed.setMaximumWidth(100)
+        self.btn_toggle_revealed.toggled.connect(self._on_toggle_revealed)
+        toggle_h.addWidget(self.btn_toggle_revealed)
+        toggle_h.addStretch()
+        revealed_v.addLayout(toggle_h)
+
+        self.revealed_items_table = RevealedItemsTable(self)
+        self.revealed_items_table.setMinimumHeight(160)
+        self.revealed_items_table.items_changed.connect(self._on_field_changed)
+        self.revealed_items_table.setVisible(False)
+        revealed_v.addWidget(self.revealed_items_table)
+
+        self.lbl_revealed_summary = QLabel("已显示物品: —")
+        self.lbl_revealed_summary.setStyleSheet("color: #333; font-weight: bold; padding: 4px;")
+        self.lbl_revealed_summary.setWordWrap(True)
+        revealed_v.addWidget(self.lbl_revealed_summary)
+        form.addRow(revealed_box)
+
         # 单格估价
         price_box = QGroupBox("单格估价 (持久化)")
-        price_h = QHBoxLayout(price_box)
+        price_v = QVBoxLayout(price_box)
+
+        # 预设管理行
+        preset_h = QHBoxLayout()
+        preset_h.addWidget(QLabel("预设:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(160)
+        self.preset_combo.setToolTip("已保存的价格预设；选择后点「应用」加载")
+        preset_h.addWidget(self.preset_combo)
+        self.btn_preset_apply = QPushButton("应用")
+        self.btn_preset_apply.setToolTip("把所选预设的价格加载到下面的输入框")
+        self.btn_preset_apply.clicked.connect(self._on_preset_apply)
+        preset_h.addWidget(self.btn_preset_apply)
+        self.btn_preset_save = QPushButton("保存为…")
+        self.btn_preset_save.setToolTip("把当前价格保存为一个命名预设")
+        self.btn_preset_save.clicked.connect(self._on_preset_save_as)
+        preset_h.addWidget(self.btn_preset_save)
+        self.btn_preset_overwrite = QPushButton("覆盖")
+        self.btn_preset_overwrite.setToolTip("用当前价格覆盖所选预设")
+        self.btn_preset_overwrite.clicked.connect(self._on_preset_overwrite)
+        preset_h.addWidget(self.btn_preset_overwrite)
+        self.btn_preset_rename = QPushButton("重命名")
+        self.btn_preset_rename.clicked.connect(self._on_preset_rename)
+        preset_h.addWidget(self.btn_preset_rename)
+        self.btn_preset_delete = QPushButton("删除")
+        self.btn_preset_delete.clicked.connect(self._on_preset_delete)
+        preset_h.addWidget(self.btn_preset_delete)
+        preset_h.addStretch()
+        price_v.addLayout(preset_h)
+
+        price_h = QHBoxLayout()
         for lab, w in (
             ("白绿", self.in_v_wg), ("蓝", self.in_v_b), ("紫", self.in_v_p),
             ("金红混", self.in_v_jr), ("金", self.in_v_g), ("红", self.in_v_r),
@@ -448,7 +511,10 @@ class MainWindow(QMainWindow):
             price_h.addWidget(w)
             price_h.addSpacing(4)
         price_h.addStretch()
+        price_v.addLayout(price_h)
         form.addRow(price_box)
+
+        self._refresh_preset_combo()
 
         return box
 
@@ -658,6 +724,12 @@ class MainWindow(QMainWindow):
             self.in_gold_total_grids.setValue(int(inputs.get("gold_total_grids") or 0))
             self.in_gold_count.setValue(int(inputs.get("gold_count") or 0))
             self.in_gold_total_value.setValue(int(inputs.get("gold_total_value") or 0))
+            self.in_owned_gold_grids.setValue(int(inputs.get("owned_gold_grids") or 0))
+            self.in_owned_red_grids.setValue(int(inputs.get("owned_red_grids") or 0))
+            revealed = list(inputs.get("revealed_items") or [])
+            self.revealed_items_table.set_items(revealed)
+            # 有已录入的物品时自动展开, 否则保持默认隐藏
+            self.btn_toggle_revealed.setChecked(bool(revealed))
 
             defaults = self.config.get_strategy_defaults(
                 self.current_strategy.name, self.current_strategy.defaults
@@ -773,6 +845,7 @@ class MainWindow(QMainWindow):
         # 更新范围 + 当前选中明细
         self._update_value_range_label(result.get("value_range"))
         self._update_selected_detail()
+        self._update_revealed_summary()
 
         if errors:
             self.status_bar.showMessage("⚠ " + " ; ".join(errors), 4000)
@@ -860,6 +933,51 @@ class MainWindow(QMainWindow):
                 f"(中位 {_fmt_money(vmed)})"
             )
 
+    def _on_toggle_revealed(self, checked: bool) -> None:
+        self.revealed_items_table.setVisible(checked)
+        self.btn_toggle_revealed.setText("▼ 收起" if checked else "▶ 展开")
+
+    def _update_revealed_summary(self) -> None:
+        """更新「已显示物品」摘要标签: 总价 + 各色占格 + 剩余金红格数。"""
+        rsum = self.revealed_items_table.summary()
+        per = rsum["per_color"]
+        total_value = rsum["total_value"]
+        total_grids = rsum["total_grids"]
+
+        if total_grids == 0 and total_value == 0:
+            self.lbl_revealed_summary.setText("已显示物品: —")
+            return
+
+        # 剩余金红格数: 基于当前选中紫色候选 (若无, 则用 T-B-WG)
+        T = self.in_T.value() or 0
+        B = self.in_B.value() or 0
+        WG = self.in_WG.value() or 0
+        p_idx = self.purple_candidates_group.checkedId()
+        if 0 <= p_idx < len(self._cached_purple_candidates):
+            a_p = self._cached_purple_candidates[p_idx].get("purple_total_grids", 0)
+        else:
+            a_p = 0
+        gold_red_total = T - B - WG - a_p
+        revealed_gr = per["gold"]["grids"] + per["red"]["grids"]
+        remaining_gr = gold_red_total - revealed_gr
+
+        color_labels = [
+            ("wg", "白绿"), ("blue", "蓝"), ("purple", "紫"),
+            ("gold", "金"), ("red", "红"),
+        ]
+        parts = []
+        for key, lab in color_labels:
+            g = per[key]["grids"]
+            v = per[key]["value"]
+            if g or v:
+                parts.append(f"{lab} {g}格/{_fmt_money(v)}")
+        breakdown = "  ".join(parts) if parts else "(无)"
+
+        self.lbl_revealed_summary.setText(
+            f"已显示物品 {breakdown}  |  总价 {_fmt_money(total_value)}  |  "
+            f"剩余金红格数 {remaining_gr}"
+        )
+
     def _update_selected_detail(self) -> None:
         p_idx = self.purple_candidates_group.checkedId()
         g_idx = self.gold_candidates_group.checkedId()
@@ -899,6 +1017,7 @@ class MainWindow(QMainWindow):
         key = f"selected_{kind}_idx"
         self.current_record.setdefault("predicted", {})[key] = btn_id
         self._update_selected_detail()
+        self._update_revealed_summary()
         self._save_timer.start()
 
     def _check_consistency(self) -> None:
@@ -908,6 +1027,18 @@ class MainWindow(QMainWindow):
     # ---------- 收集字段 → record dict ----------
 
     def _collect_inputs(self) -> dict[str, Any]:
+        revealed_items = self.revealed_items_table.items()
+        rsum = self.revealed_items_table.summary()
+        # owned_gold/red 从已显示物品中的金/红行自动派生
+        derived_gold = rsum["per_color"]["gold"]["grids"]
+        derived_red = rsum["per_color"]["red"]["grids"]
+        # 同步回隐藏的 spinbox (用于估价兼容旧逻辑)
+        if self.in_owned_gold_grids.value() != derived_gold:
+            with QSignalBlocker(self.in_owned_gold_grids):
+                self.in_owned_gold_grids.setValue(derived_gold)
+        if self.in_owned_red_grids.value() != derived_red:
+            with QSignalBlocker(self.in_owned_red_grids):
+                self.in_owned_red_grids.setValue(derived_red)
         return {
             "T": self.in_T.value() or None,
             "B": self.in_B.value() or None,
@@ -922,6 +1053,9 @@ class MainWindow(QMainWindow):
             "gold_total_grids": self.in_gold_total_grids.value() or None,
             "gold_count": self.in_gold_count.value() or None,
             "gold_total_value": self.in_gold_total_value.value() or None,
+            "owned_gold_grids": derived_gold or None,
+            "owned_red_grids": derived_red or None,
+            "revealed_items": revealed_items,
             "v_wg": self.in_v_wg.value() or None,
             "v_b": self.in_v_b.value() or None,
             "v_p": self.in_v_p.value() or None,
@@ -1013,6 +1147,7 @@ class MainWindow(QMainWindow):
         if name not in self.strategies:
             return
         self.current_strategy = self.strategies[name]
+        self._refresh_preset_combo()
         self._on_field_changed()
 
     def _on_new_game(self) -> None:
@@ -1168,6 +1303,137 @@ class MainWindow(QMainWindow):
         self.store.delete(rid)
         self.status_bar.showMessage("已删除", 2000)
         self._start_fresh_record(new_session=False)
+
+    # ---------- 价格预设 ----------
+
+    def _current_price_values(self) -> dict[str, float]:
+        return {
+            "v_wg": float(self.in_v_wg.value()),
+            "v_b": float(self.in_v_b.value()),
+            "v_p": float(self.in_v_p.value()),
+            "v_jr": float(self.in_v_jr.value()),
+            "v_g": float(self.in_v_g.value()),
+            "v_r": float(self.in_v_r.value()),
+            "purple_count_est": float(self.in_purple_count_est.value()),
+            "gold_count_est": float(self.in_gold_count_est.value()),
+        }
+
+    def _refresh_preset_combo(self, select: str | None = None) -> None:
+        names = self.config.list_price_presets(self.current_strategy.name)
+        with QSignalBlocker(self.preset_combo):
+            self.preset_combo.clear()
+            for n in names:
+                self.preset_combo.addItem(n)
+            if select and select in names:
+                self.preset_combo.setCurrentText(select)
+            elif names:
+                self.preset_combo.setCurrentIndex(0)
+            else:
+                self.preset_combo.setCurrentIndex(-1)
+        has = bool(names)
+        self.btn_preset_apply.setEnabled(has)
+        self.btn_preset_overwrite.setEnabled(has)
+        self.btn_preset_rename.setEnabled(has)
+        self.btn_preset_delete.setEnabled(has)
+
+    def _on_preset_apply(self) -> None:
+        name = self.preset_combo.currentText().strip()
+        if not name:
+            return
+        preset = self.config.get_price_preset(self.current_strategy.name, name)
+        if preset is None:
+            self.status_bar.showMessage(f"预设「{name}」不存在", 3000)
+            return
+        # 应用到 UI
+        self._loading = True
+        try:
+            self.in_v_wg.setValue(int(preset.get("v_wg", self.in_v_wg.value())))
+            self.in_v_b.setValue(int(preset.get("v_b", self.in_v_b.value())))
+            self.in_v_p.setValue(int(preset.get("v_p", self.in_v_p.value())))
+            self.in_v_jr.setValue(int(preset.get("v_jr", self.in_v_jr.value())))
+            self.in_v_g.setValue(int(preset.get("v_g", self.in_v_g.value())))
+            self.in_v_r.setValue(int(preset.get("v_r", self.in_v_r.value())))
+            if "purple_count_est" in preset:
+                self.in_purple_count_est.setValue(int(preset["purple_count_est"]))
+            if "gold_count_est" in preset:
+                self.in_gold_count_est.setValue(int(preset["gold_count_est"]))
+        finally:
+            self._loading = False
+        self._on_field_changed()
+        self.status_bar.showMessage(f"已应用预设「{name}」", 2500)
+
+    def _on_preset_save_as(self) -> None:
+        name, ok = QInputDialog.getText(self, "保存价格预设", "预设名称:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            self.status_bar.showMessage("预设名不能为空", 3000)
+            return
+        existing = self.config.list_price_presets(self.current_strategy.name)
+        if name in existing:
+            ans = QMessageBox.question(
+                self,
+                "覆盖确认",
+                f"预设「{name}」已存在，是否覆盖？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        self.config.save_price_preset(
+            self.current_strategy.name, name, self._current_price_values()
+        )
+        self._refresh_preset_combo(select=name)
+        self.status_bar.showMessage(f"已保存预设「{name}」", 2500)
+
+    def _on_preset_overwrite(self) -> None:
+        name = self.preset_combo.currentText().strip()
+        if not name:
+            return
+        ans = QMessageBox.question(
+            self,
+            "覆盖预设",
+            f"用当前价格覆盖预设「{name}」？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self.config.save_price_preset(
+            self.current_strategy.name, name, self._current_price_values()
+        )
+        self.status_bar.showMessage(f"已覆盖预设「{name}」", 2500)
+
+    def _on_preset_rename(self) -> None:
+        old = self.preset_combo.currentText().strip()
+        if not old:
+            return
+        new, ok = QInputDialog.getText(self, "重命名预设", "新名称:", text=old)
+        if not ok:
+            return
+        new = new.strip()
+        if not new or new == old:
+            return
+        if not self.config.rename_price_preset(self.current_strategy.name, old, new):
+            self.status_bar.showMessage(f"重命名失败 (名称已存在?)", 3000)
+            return
+        self._refresh_preset_combo(select=new)
+        self.status_bar.showMessage(f"已重命名为「{new}」", 2500)
+
+    def _on_preset_delete(self) -> None:
+        name = self.preset_combo.currentText().strip()
+        if not name:
+            return
+        ans = QMessageBox.question(
+            self,
+            "删除预设",
+            f"确定删除预设「{name}」？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self.config.delete_price_preset(self.current_strategy.name, name)
+        self._refresh_preset_combo()
+        self.status_bar.showMessage(f"已删除预设「{name}」", 2500)
 
 
 def _try_int(s: str) -> int | None:

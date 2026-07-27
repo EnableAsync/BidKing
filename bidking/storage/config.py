@@ -43,6 +43,43 @@ class Config:
         self._data.setdefault("strategy_defaults", {})[strategy_name] = values
         self._flush()
 
+    # ---------- 价格预设 ----------
+
+    def list_price_presets(self, strategy_name: str) -> list[str]:
+        presets = self._data.get("price_presets", {}).get(strategy_name, {})
+        return sorted(presets.keys())
+
+    def get_price_preset(self, strategy_name: str, preset_name: str) -> dict[str, float] | None:
+        preset = self._data.get("price_presets", {}).get(strategy_name, {}).get(preset_name)
+        if preset is None:
+            return None
+        return dict(preset)
+
+    def save_price_preset(
+        self, strategy_name: str, preset_name: str, values: dict[str, float]
+    ) -> None:
+        bucket = self._data.setdefault("price_presets", {}).setdefault(strategy_name, {})
+        bucket[preset_name] = dict(values)
+        self._flush()
+
+    def delete_price_preset(self, strategy_name: str, preset_name: str) -> bool:
+        bucket = self._data.get("price_presets", {}).get(strategy_name, {})
+        if preset_name in bucket:
+            del bucket[preset_name]
+            self._flush()
+            return True
+        return False
+
+    def rename_price_preset(
+        self, strategy_name: str, old_name: str, new_name: str
+    ) -> bool:
+        bucket = self._data.get("price_presets", {}).get(strategy_name, {})
+        if old_name not in bucket or new_name in bucket:
+            return False
+        bucket[new_name] = bucket.pop(old_name)
+        self._flush()
+        return True
+
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
